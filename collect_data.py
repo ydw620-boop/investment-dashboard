@@ -76,17 +76,25 @@ K_SIGNAL = 2 / (CONFIG["SIGNAL_PERIOD"] + 1)
 # ═══════════════════════════════════════════
 # 1. pykrx 데이터 수집
 # ═══════════════════════════════════════════
+def _find_col(df, candidates):
+    """DataFrame에서 후보 컬럼명 중 실제 존재하는 첫 번째 반환. 없으면 ValueError."""
+    for c in candidates:
+        if c in df.columns:
+            return c
+    raise KeyError(f"컬럼을 찾지 못했습니다. 후보: {candidates}, 실제: {list(df.columns)}")
+
+
 def collect_via_pykrx():
     """pykrx로 시가총액, 외국인/기관 순매수, 업종지수 수집"""
     from pykrx import stock
-    
+
     today = datetime.now()
     start = today - timedelta(days=CONFIG["LOOKBACK_DAYS"] + 30)  # 여유분
     start_str = start.strftime("%Y%m%d")
     today_str = today.strftime("%Y%m%d")
-    
+
     print(f"[1/5] 시가총액 상위 {CONFIG['TOP_N_STOCKS']}개 종목 확인...")
-    
+
     # 최근 거래일의 시총 상위 종목
     cap_df = stock.get_market_cap(today_str)
     if cap_df.empty:
@@ -96,43 +104,49 @@ def collect_via_pykrx():
             cap_df = stock.get_market_cap(dt)
             if not cap_df.empty:
                 break
-    
-    top_tickers = cap_df.nlargest(CONFIG["TOP_N_STOCKS"], "시가총액").index.tolist()
+
+    mktcap_col = _find_col(cap_df, ["시가총액", "MktCap", "mktcap", "Mktcap"])
+    top_tickers = cap_df.nlargest(CONFIG["TOP_N_STOCKS"], mktcap_col).index.tolist()
     ticker_names = {t: stock.get_market_ticker_name(t) for t in top_tickers}
-    
+
     print(f"   상위 종목: {', '.join([ticker_names[t] for t in top_tickers[:5]])}...")
-    
+
     # ─── 종목별 데이터 수집 ───
     print(f"[2/5] 종목별 시가총액 + 수급 데이터 수집 ({len(top_tickers)}개)...")
-    
+
     stock_data = {}
     for i, ticker in enumerate(top_tickers):
         name = ticker_names[ticker]
         print(f"   [{i+1}/{len(top_tickers)}] {name} ({ticker})...", end=" ")
-        
+
         try:
             # 시가총액 (일별)
             cap_daily = stock.get_market_cap(start_str, today_str, ticker)
-            
+
             # 투자자별 거래대금 (순매수) - 기관합계, 외국인합계
             trading = stock.get_market_trading_value_by_date(
                 start_str, today_str, ticker
             )
-            
+
             if cap_daily.empty or trading.empty:
                 print("SKIP (no data)")
                 continue
-            
+
+            # 컬럼명 자동 탐지
+            cap_col  = _find_col(cap_daily, ["시가총액", "MktCap", "mktcap", "Mktcap"])
+            inst_col = _find_col(trading, ["기관합계", "기관", "Inst", "inst"])
+            fore_col = _find_col(trading, ["외국인합계", "외국인", "Foreign", "foreign", "Fore"])
+
             # 날짜 기준으로 병합
-            merged = cap_daily[["시가총액"]].join(
-                trading[["기관합계", "외국인합계"]], how="inner"
+            merged = cap_daily[[cap_col]].join(
+                trading[[inst_col, fore_col]], how="inner"
             )
             merged = merged.dropna()
-            
+
             dates = [d.strftime("%Y-%m-%d") for d in merged.index]
-            caps = merged["시가총액"].values.astype(float) / 1e8  # 억원 단위
-            inst_net = merged["기관합계"].values.astype(float) / 1e8
-            fore_net = merged["외국인합계"].values.astype(float) / 1e8
+            caps = merged[cap_col].values.astype(float) / 1e8  # 억원 단위
+            inst_net = merged[inst_col].values.astype(float) / 1e8
+            fore_net = merged[fore_col].values.astype(float) / 1e8
             
             # 5일 누적 순매수
             inst_5d = pd.Series(inst_net).rolling(CONFIG["FLOW_WINDOW"]).sum().fillna(0).values
@@ -188,18 +202,21 @@ def collect_via_pykrx():
             if idx_trading.empty:
                 continue
             
-            # 병합
-            merged = idx_ohlcv[["종가"]].join(
-                idx_trading[["기관합계", "외국인합계"]], how="inner"
+            # 컬럼명 자동 탐지 후 병합
+            close_col = _find_col(idx_ohlcv, ["종가", "Close", "close"])
+            inst_col  = _find_col(idx_trading, ["기관합계", "기관", "Inst", "inst"])
+            fore_col  = _find_col(idx_trading, ["외국인합계", "외국인", "Foreign", "foreign", "Fore"])
+            merged = idx_ohlcv[[close_col]].join(
+                idx_trading[[inst_col, fore_col]], how="inner"
             )
             merged = merged.dropna()
-            
+
             if len(merged) < 30:
                 continue
-            
-            caps = merged["종가"].values.astype(float)
-            inst_net = merged["기관합계"].values.astype(float) / 1e8
-            fore_net = merged["외국인합계"].values.astype(float) / 1e8
+
+            caps = merged[close_col].values.astype(float)
+            inst_net = merged[inst_col].values.astype(float) / 1e8
+            fore_net = merged[fore_col].values.astype(float) / 1e8
             
             flow_5d = pd.Series(inst_net + fore_net).rolling(CONFIG["FLOW_WINDOW"]).sum().fillna(0).values
             
@@ -301,22 +318,26 @@ def calculate_tilt_index(start_str, today_str):
         # 코스피, 코스닥 지수
         kospi = stock.get_index_ohlcv(start_str, today_str, "1001")
         kosdaq = stock.get_index_ohlcv(start_str, today_str, "2001")
-        
+
         if kospi.empty or kosdaq.empty:
             return {"kp": {"d":[],"v":[],"o":[],"c":[]}, "kd": {"d":[],"v":[],"o":[],"c":[]}}
-        
+
+        kp_close_col = _find_col(kospi,  ["종가", "Close", "close"])
+        kd_close_col = _find_col(kosdaq, ["종가", "Close", "close"])
+
         # 업종별 30일 수익률
         sector_tickers = ["1003","1005","1009","1011","1013","1015",
                           "1017","1019","1021","1023","1027","1029",
                           "1031","1033","1035","1037","1039","1041",
                           "1043","1045","1047","1049","1051"]
-        
+
         returns_list = []
         for st in sector_tickers:
             try:
                 idx = stock.get_index_ohlcv(start_str, today_str, st)
                 if not idx.empty:
-                    ret_30d = idx["종가"].pct_change(30) * 100
+                    close_col = _find_col(idx, ["종가", "Close", "close"])
+                    ret_30d = idx[close_col].pct_change(30) * 100
                     returns_list.append(ret_30d)
             except:
                 continue
@@ -334,8 +355,8 @@ def calculate_tilt_index(start_str, today_str):
         # 롱숏 시그널 (코스피 대비 코스닥 상대강도)
         common_idx = kospi.index.intersection(kosdaq.index).intersection(tilt_std.index)
         
-        kp = kospi.loc[common_idx, "종가"].values
-        kd = kosdaq.loc[common_idx, "종가"].values
+        kp = kospi.loc[common_idx, kp_close_col].values
+        kd = kosdaq.loc[common_idx, kd_close_col].values
         tilt = tilt_std.loc[common_idx].values
         dates = [d.strftime("%Y-%m-%d") for d in common_idx]
         
