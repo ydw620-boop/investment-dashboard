@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>📊 투자 대시보드</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/recharts/2.7.3/Recharts.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js"></script>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { font-family: 'Pretendard', -apple-system, BlinkMacSystemFont, sans-serif; background:#f8fafc; color:#1e293b; }
+.loading { display:flex; align-items:center; justify-content:center; height:100vh; font-size:18px; color:#64748b; flex-direction:column; gap:12px; }
+.spinner { width:40px; height:40px; border:4px solid #e2e8f0; border-top:4px solid #7c3aed; border-radius:50%; animation:spin 1s linear infinite; }
+@keyframes spin { to { transform:rotate(360deg); } }
+</style>
+</head>
+<body>
+<div id="root"><div class="loading"><div class="spinner"></div>데이터 로딩중...</div></div>
+
+<script type="text/babel">
+const { useState, useEffect, useMemo } = React;
+const { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, ReferenceLine, ComposedChart, Bar, Cell } = Recharts;
+
+const TABS = [
+  { id:"stock", label:"종목 수급" },
+  { id:"sector", label:"업종 수급" },
+  { id:"tilt", label:"쏠림지수" },
+  { id:"etf", label:"액티브 ETF" },
+];
+
+const fd = d => d ? d.slice(5) : "";
+const fn = v => { if(v>=1e6) return (v/1e4).toFixed(0)+"억"; if(v>=1e4) return (v/1e4).toFixed(1)+"억"; return v?.toFixed(0); };
+const TT = {contentStyle:{background:"#fff",border:"1px solid #d1d5db",borderRadius:6,fontSize:11,boxShadow:"0 2px 8px rgba(0,0,0,.08)"}};
+
+// ── 종목 오실레이터 ──
+const StockPanel = ({DATA}) => {
+  const {d:dates, s:stocks} = DATA.stock;
+  const list = useMemo(() => Object.entries(stocks).sort((a,b) => b[1].c[b[1].c.length-1] - a[1].c[a[1].c.length-1]), [stocks]);
+  const [sel, setSel] = useState(list[0]?.[0]||"");
+  const cur = stocks[sel];
+  const ranking = useMemo(() => list.map(([c,s]) => ({c,n:s.n,o:s.o[s.o.length-1]})).sort((a,b)=>b.o-a.o), [list]);
+  const lo = cur ? cur.o[cur.o.length-1] : 0;
+  const oscData = useMemo(() => cur ? dates.map((d,i) => ({d, cap:cur.c[i], osc:cur.o[i]*100})) : [], [cur,dates]);
+  const sellData = useMemo(() => cur ? dates.map((d,i) => ({d, cap:cur.c[i], sum:cur.s[i]})) : [], [cur,dates]);
+
+  if(!list.length) return <div style={{padding:40,textAlign:"center",color:"#94a3b8"}}>데이터가 아직 없습니다. GitHub Actions를 실행해주세요.</div>;
+
+  return <div>
+    <div style={{display:"flex",gap:10,marginBottom:12,flexWrap:"wrap"}}>
+      <div style={{background:"#f1f5f9",borderRadius:8,padding:"8px 14px",flex:1,minWidth:120}}>
+        <div style={{fontSize:10,color:"#64748b"}}>종목</div>
+        <div style={{fontSize:15,fontWeight:800,color:"#0f172a"}}>{cur?.n}</div>
+      </div>
+      <div style={{background:"#f1f5f9",borderRadius:8,padding:"8px 14px",flex:1,minWidth:120}}>
+        <div style={{fontSize:10,color:"#64748b"}}>오실레이터</div>
+        <div style={{fontSize:15,fontWeight:800,fontFamily:"monospace",color:lo>0?"#dc2626":"#2563eb"}}>{lo>0?"+":""}{(lo*100).toFixed(4)}%</div>
+      </div>
+      <div style={{background:"#f1f5f9",borderRadius:8,padding:"8px 14px",flex:1,minWidth:120}}>
+        <div style={{fontSize:10,color:"#64748b"}}>판단</div>
+        <div style={{fontSize:13,fontWeight:700,color:lo>0?"#16a34a":lo<-0.0003?"#ea580c":"#64748b"}}>{lo>0?"✅ 수급 유입":lo<-0.0003?"⚠ 수급 유출":"중립"}</div>
+      </div>
+    </div>
+    <div style={{display:"flex",gap:12,flexWrap:"wrap"}}>
+      <div style={{flex:"1 1 480px",minWidth:0}}>
+        <div style={{background:"#fff",border:"1px solid #e2e8f0",borderRadius:8,padding:"12px 8px 8px",marginBottom:12}}>
+          <div style={{fontSize:12,fontWeight:700,color:"#374151",marginBottom:4,paddingLeft:4}}>{cur?.n} 시가총액 + 수급오실레이터</div>
+          <div style={{height:240}}>
+            <ResponsiveContainer><LineChart data={oscData} margin={{top:5,right:5,bottom:0,left:-5}}>
+              <CartesianGrid strokeDasharray="2 4" stroke="#e5e7eb"/>
+              <XAxis dataKey="d" tickFormatter={fd} tick={{fill:"#6b7280",fontSize:9}} interval={Math.floor(dates.length/6)}/>
+              <YAxis yAxisId="c" tick={{fill:"#374151",fontSize:9}} tickFormatter={fn}/>
+              <YAxis yAxisId="o" orientation="right" tick={{fill:"#dc2626",fontSize:9}} tickFormatter={v=>v.toFixed(2)+"%"}/>
+              <Tooltip {...TT} formatter={(v,n)=>n==="cap"?[fn(v)+"원","시가총액"]:[v.toFixed(4)+"%","오실레이터"]}/>
+              <ReferenceLine yAxisId="o" y={0} stroke="#9ca3af" strokeDasharray="3 3"/>
+              <Line yAxisId="c" dataKey="cap" stroke="#1f2937" strokeWidth={2.5} dot={false}/>
+              <Line yAxisId="o" dataKey="osc" stroke="#dc2626" strokeWidth={2} dot={false}/>
+            </LineChart></ResponsiveContainer>
+          </div>
+          <div style={{display:"flex",justifyContent:"center",gap:20,fontSize:10,marginTop:4}}>
+            <span style={{color:"#1f2937"}}>━ 시가총액</span>
+            <span style={{color:"#dc2626"}}>━ 수급오실레이터</span>
+          </div>
+        </div>
+        <div style={{background:"#fff",border:"1px solid #e2e8f0",borderRadius:8,padding:"12px 8px 8px"}}>
+          <div style={{fontSize:12,fontWeight:700,color:"#374151",marginBottom:4,paddingLeft:4}}>{cur?.n} 기관 외국인 20일 누적매도대금합산</div>
+          <div style={{height:240}}>
+            <ResponsiveContainer><LineChart data={sellData} margin={{top:5,right:5,bottom:0,left:-5}}>
+              <CartesianGrid strokeDasharray="2 4" stroke="#e5e7eb"/>
+              <XAxis dataKey="d" tickFormatter={fd} tick={{fill:"#6b7280",fontSize:9}} interval={Math.floor(dates.length/6)}/>
+              <YAxis yAxisId="c" tick={{fill:"#2563eb",fontSize:9}} tickFormatter={fn}/>
+              <YAxis yAxisId="s" orientation="right" tick={{fill:"#dc2626",fontSize:9}} tickFormatter={fn}/>
+              <Tooltip {...TT} formatter={(v,n)=>n==="cap"?[fn(v)+"원","시가총액"]:[fn(v)+"원","20일누적매도합산"]}/>
+              <Line yAxisId="c" dataKey="cap" stroke="#2563eb" strokeWidth={2} dot={false}/>
+              <Line yAxisId="s" dataKey="sum" stroke="#dc2626" strokeWidth={2} dot={false}/>
+            </LineChart></ResponsiveContainer>
+          </div>
+          <div style={{display:"flex",justifyContent:"center",gap:20,fontSize:10,marginTop:4}}>
+            <span style={{color:"#2563eb"}}>━ 시가총액</span>
+            <span style={{color:"#dc2626"}}>━ 20일 누적매도합산</span>
+          </div>
+        </div>
+      </div>
+      <div style={{flex:"0 0 220px",maxHeight:560,overflowY:"auto",background:"#f8fafc",borderRadius:8,padding:6,border:"1px solid #e2e8f0"}}>
+        <div style={{fontSize:10,color:"#6b7280",fontWeight:600,padding:"4px 6px",position:"sticky",top:0,background:"#f8fafc",zIndex:1}}>오실레이터 순위</div>
+        {ranking.map((r,i)=><div key={r.c} onClick={()=>setSel(r.c)} style={{display:"flex",justifyContent:"space-between",padding:"4px 6px",borderRadius:4,cursor:"pointer",fontSize:11,
+          background:sel===r.c?"#e2e8f0":"transparent",borderLeft:sel===r.c?"2px solid #7c3aed":"2px solid transparent"}}>
+          <span style={{color:"#1e293b",fontWeight:500}}><span style={{color:"#9ca3af",fontSize:9,marginRight:4}}>{i+1}</span>{r.n}</span>
+          <span style={{color:r.o>0?"#dc2626":"#2563eb",fontFamily:"monospace",fontSize:10,fontWeight:700}}>{(r.o*100).toFixed(3)}%</span>
+        </div>)}
+      </div>
+    </div>
+  </div>;
+};
+
+// ── 업종 오실레이터 ──
+const SectorPanel = ({DATA}) => {
+  const {s:sectors} = DATA.sector;
+  const sorted = useMemo(() => [...sectors].sort((a,b)=>b.last-a.last), [sectors]);
+  if(!sorted.length) return <div style={{padding:40,textAlign:"center",color:"#94a3b8"}}>데이터가 아직 없습니다.</div>;
+  return <div>
+    <div style={{fontSize:13,fontWeight:700,color:"#374151",marginBottom:8}}>
+      전 업종 수급 오실레이터 현황 <span style={{fontWeight:400,fontSize:11,color:"#6b7280"}}>(bps, 양수=유입 음수=유출)</span>
+    </div>
+    <div style={{display:"grid",gap:6,gridTemplateColumns:"repeat(auto-fill, minmax(200px, 1fr))"}}>
+      {sorted.map(sec => {
+        const last = sec.last;
+        const color = last > 0 ? "#dc2626" : "#2563eb";
+        const bg = last > 0 ? "#fef2f2" : "#eff6ff";
+        const data = sec.o.map(v => ({v}));
+        return <div key={sec.c} style={{background:bg,borderRadius:8,padding:"8px 10px",borderLeft:`3px solid ${color}`,border:`1px solid ${last>0?"#fecaca":"#bfdbfe"}`}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}}>
+            <span style={{fontSize:11,fontWeight:600,color:"#1e293b",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",maxWidth:120}}>{sec.n}</span>
+            <span style={{fontSize:12,fontWeight:800,fontFamily:"monospace",color}}>{last>0?"+":""}{last.toFixed(1)}</span>
+          </div>
+          <div style={{height:36}}>
+            <ResponsiveContainer><LineChart data={data} margin={{top:2,right:0,bottom:0,left:0}}>
+              <ReferenceLine y={0} stroke="#d1d5db" strokeWidth={0.5}/>
+              <Line dataKey="v" stroke={color} strokeWidth={1.2} dot={false}/>
+            </LineChart></ResponsiveContainer>
+          </div>
+        </div>;
+      })}
+    </div>
+  </div>;
+};
+
+// ── 쏠림지수 ──
+const TiltPanel = ({DATA}) => {
+  const {kp, kd} = DATA.tilt;
+  const kpData = useMemo(() => kp.d.map((d,i) => ({d, v:kp.v[i], o:kp.o[i], c:kp.c[i]})), [kp]);
+  const kdData = useMemo(() => kd.d.map((d,i) => ({d, v:kd.v[i], o:kd.o[i], c:kd.c[i]})), [kd]);
+  if(!kpData.length) return <div style={{padding:40,textAlign:"center",color:"#94a3b8"}}>데이터가 아직 없습니다.</div>;
+  
+  const ChartBlock = ({title, data, label}) => (
+    <div style={{background:"#fff",border:"1px solid #e2e8f0",borderRadius:8,padding:"12px 8px 8px",marginBottom:12}}>
+      <div style={{fontSize:12,fontWeight:700,color:"#374151",marginBottom:4,paddingLeft:4}}>{title}</div>
+      <div style={{height:280}}>
+        <ResponsiveContainer><LineChart data={data} margin={{top:5,right:5,bottom:0,left:-5}}>
+          <CartesianGrid strokeDasharray="2 4" stroke="#e5e7eb"/>
+          <XAxis dataKey="d" tickFormatter={fd} tick={{fill:"#6b7280",fontSize:9}} interval={Math.floor(data.length/7)}/>
+          <YAxis yAxisId="v" tick={{fill:"#2563eb",fontSize:9}}/>
+          <YAxis yAxisId="o" orientation="right" tick={{fill:"#6b7280",fontSize:9}}/>
+          <Tooltip {...TT} formatter={(v,n)=>n==="v"?[v?.toFixed(2),label]:n==="o"?[v?.toFixed(4),"쏠림지수"]:[v?.toFixed(4),"상관관계"]}/>
+          <ReferenceLine yAxisId="o" y={0} stroke="#9ca3af" strokeDasharray="3 3"/>
+          <Line yAxisId="v" dataKey="v" stroke="#2563eb" strokeWidth={2} dot={false} name="v"/>
+          <Line yAxisId="o" dataKey="o" stroke="#dc2626" strokeWidth={2} dot={false} name="o"/>
+          <Line yAxisId="o" dataKey="c" stroke="#65a30d" strokeWidth={1.5} dot={false} name="c"/>
+        </LineChart></ResponsiveContainer>
+      </div>
+      <div style={{display:"flex",justifyContent:"center",gap:20,fontSize:10,marginTop:4}}>
+        <span style={{color:"#2563eb"}}>━ {label}</span>
+        <span style={{color:"#dc2626"}}>━ 업종쏠림지수</span>
+        <span style={{color:"#65a30d"}}>━ 상관관계</span>
+      </div>
+    </div>
+  );
+
+  return <div>
+    <div style={{background:"#fffbeb",border:"1px solid #fde68a",borderRadius:8,padding:"10px 14px",marginBottom:12,fontSize:12,color:"#92400e",lineHeight:1.7}}>
+      <strong>특정업종 강도지수 해석</strong><br/>
+      붉은선 상승 → 특정업종으로 자금 쏠림 | 붉은선 하락 → 순환매 (수익내기 쉬운 장)
+    </div>
+    <ChartBlock title="코스피 + 업종쏠림지수 + 상관관계" data={kpData} label="코스피"/>
+    <ChartBlock title="코스닥 + 업종쏠림지수 + 상관관계" data={kdData} label="코스닥"/>
+  </div>;
+};
+
+// ── ETF ──
+const ETFPanel = ({DATA}) => {
+  const etfEntries = Object.entries(DATA.etf);
+  const cats = [...new Set(etfEntries.map(([_,v])=>v.c))];
+  const [cat, setCat] = useState("");
+  const filtered = useMemo(() => etfEntries.filter(([_,v]) => !cat || v.c===cat), [cat, etfEntries]);
+  if(!etfEntries.length) return <div style={{padding:40,textAlign:"center",color:"#94a3b8"}}>데이터가 아직 없습니다.</div>;
+
+  return <div>
+    <div style={{display:"flex",gap:6,marginBottom:12,flexWrap:"wrap"}}>
+      {["", ...cats].map(c => <button key={c} onClick={()=>setCat(c)} style={{
+        padding:"5px 12px",borderRadius:14,border:cat===c?"1px solid #7c3aed":"1px solid #d1d5db",cursor:"pointer",fontSize:11,fontWeight:600,
+        background:cat===c?"#7c3aed":"#f1f5f9",color:cat===c?"#fff":"#6b7280"
+      }}>{c||"전체"}</button>)}
+    </div>
+    <div style={{display:"grid",gap:10,gridTemplateColumns:"repeat(auto-fill, minmax(340px, 1fr))"}}>
+      {filtered.map(([name, etf]) => <div key={name} style={{background:"#fff",borderRadius:8,padding:14,border:"1px solid #e2e8f0"}}>
+        <div style={{fontSize:12,fontWeight:700,color:"#1e293b",marginBottom:2}}>{name}</div>
+        <div style={{display:"flex",justifyContent:"space-between",marginBottom:8}}>
+          <span style={{fontSize:10,color:"#6b7280"}}>{etf.c}</span>
+          {etf.cd && <span style={{fontSize:10,color:"#6b7280"}}>기준: <strong style={{color:"#1e293b"}}>{etf.cd}</strong></span>}
+        </div>
+        <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
+          <thead><tr style={{borderBottom:"2px solid #e5e7eb"}}>
+            <th style={{textAlign:"left",padding:"4px",color:"#6b7280",fontWeight:600}}>종목</th>
+            <th style={{textAlign:"right",padding:"4px",color:"#6b7280",fontWeight:600}}>비중%</th>
+          </tr></thead>
+          <tbody>{etf.h.map((h,i) => <tr key={i} style={{borderBottom:"1px solid #f1f5f9"}}>
+            <td style={{padding:"3px 4px",color:"#1e293b",fontWeight:500,maxWidth:140,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{h.n}</td>
+            <td style={{textAlign:"right",padding:"3px 4px",color:"#1e293b",fontFamily:"monospace"}}>{h.w.toFixed(1)}</td>
+          </tr>)}</tbody>
+        </table>
+      </div>)}
+    </div>
+  </div>;
+};
+
+// ── Main App ──
+function App() {
+  const [DATA, setDATA] = useState(null);
+  const [error, setError] = useState(null);
+  const [tab, setTab] = useState("stock");
+
+  useEffect(() => {
+    fetch("data/dashboard_data.json")
+      .then(r => {
+        if(!r.ok) throw new Error("데이터 파일을 찾을 수 없습니다");
+        return r.json();
+      })
+      .then(setDATA)
+      .catch(e => setError(e.message));
+  }, []);
+
+  if(error) return <div className="loading" style={{color:"#ef4444"}}>
+    <div>⚠️ {error}</div>
+    <div style={{fontSize:13,color:"#94a3b8",marginTop:8}}>GitHub Actions를 먼저 실행해주세요</div>
+  </div>;
+  if(!DATA) return <div className="loading"><div className="spinner"></div>데이터 로딩중...</div>;
+
+  const ld = DATA.stock?.d?.[DATA.stock.d.length-1] || "데이터 없음";
+
+  return <div style={{maxWidth:1100,margin:"0 auto",padding:"14px 12px"}}>
+    <div style={{marginBottom:12}}>
+      <h1 style={{fontSize:17,fontWeight:800,color:"#0f172a"}}>📊 투자 대시보드</h1>
+      <div style={{fontSize:10,color:"#6b7280",marginTop:2}}>기준일: {ld} | 매일 장 마감 후 자동 업데이트</div>
+    </div>
+    <div style={{display:"flex",gap:2,marginBottom:14,borderBottom:"2px solid #e2e8f0",overflowX:"auto"}}>
+      {TABS.map(t=><button key={t.id} onClick={()=>setTab(t.id)} style={{
+        padding:"8px 16px",border:"none",cursor:"pointer",fontSize:12,fontWeight:600,borderRadius:"6px 6px 0 0",
+        background:tab===t.id?"#fff":"transparent",color:tab===t.id?"#0f172a":"#9ca3af",
+        borderBottom:tab===t.id?"2px solid #7c3aed":"2px solid transparent",whiteSpace:"nowrap"
+      }}>{t.label}</button>)}
+    </div>
+    {tab==="stock" && <StockPanel DATA={DATA}/>}
+    {tab==="sector" && <SectorPanel DATA={DATA}/>}
+    {tab==="tilt" && <TiltPanel DATA={DATA}/>}
+    {tab==="etf" && <ETFPanel DATA={DATA}/>}
+  </div>;
+}
+
+ReactDOM.render(<App/>, document.getElementById("root"));
+</script>
+</body>
+</html>
